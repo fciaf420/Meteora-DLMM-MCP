@@ -9,10 +9,12 @@ module.exports = {
       "crypto",
       "tweetnacl",
       "borsh",
-      "@solana/spl-token"
+      "@solana/spl-token",
+      "dotenv"
     ],
     target: "node18",
-    minify: false, // Keep false during development
+    minify: true, // Enable minification for production
     platform: "node",
+    bundle: false, // Don't bundle, just transpile
   },
 };

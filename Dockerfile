@@ -1,18 +1,22 @@
-FROM node:18-slim
+FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files first for better caching
+COPY package*.json tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install ALL dependencies (including devDependencies for TypeScript)
+RUN npm ci
 
 # Copy source code
-COPY . .
+COPY src/ ./src/
+COPY smithery.config.js ./
 
 # Build TypeScript
 RUN npm run compile
+
+# Remove dev dependencies to reduce image size
+RUN npm prune --production
 
 # Expose port
 EXPOSE 8000
