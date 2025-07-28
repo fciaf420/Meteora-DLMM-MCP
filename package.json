@@ -5,9 +5,10 @@
   "main": "dist/index.js",
   "type": "commonjs",
   "scripts": {
-    "build": "smith build",
+    "build": "tsc && smith build",
     "dev": "smith dev",
     "start": "node dist/index.js",
+    "compile": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -30,6 +31,8 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "smithery-cli": "^0.5.1"
+    "@types/node": "^24.1.0",
+    "smithery-cli": "^0.5.1",
+    "typescript": "^5.8.3"
   }
 }

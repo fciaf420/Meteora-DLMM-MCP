@@ -26,16 +26,16 @@ const configSchema = z.object({
     .describe("Timeout for RPC calls in milliseconds")
 });
 
-module.exports = function ({ config }: { config: z.infer<typeof configSchema> }) {
+module.exports = function ({ config }: { config: any }) {
   const connection = new Connection(config.rpcUrl);
   
   // Initialize wallet if private key provided
-  let wallet: Keypair | null = null;
+  let wallet: any = null;
   if (config.walletPrivateKey) {
     try {
       wallet = Keypair.fromSecretKey(Buffer.from(config.walletPrivateKey, 'base64'));
       console.log(`Wallet loaded: ${wallet.publicKey.toString()}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Invalid private key format. Expected base64 encoded private key.");
     }
   }
@@ -52,7 +52,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
     {
       poolAddress: z.string().describe("DLMM pool address"),
     },
-    async ({ poolAddress }) => {
+    async ({ poolAddress }: { poolAddress: string }) => {
       try {
         const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
         const activeBin = await dlmmPool.getActiveBin();
@@ -75,7 +75,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
             }, null, 2)
           }]
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           content: [{
             type: "text",
@@ -93,7 +93,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
     {
       userWallet: z.string().describe("User wallet address"),
     },
-    async ({ userWallet }) => {
+    async ({ userWallet }: { userWallet: string }) => {
       try {
         const userPositions = await DLMM.getAllLbPairPositionsByUser(
           connection, 
@@ -110,7 +110,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
         }
 
         const positionDetails = await Promise.all(
-          userPositions.map(async (position) => {
+          userPositions.map(async (position: any) => {
             try {
               const dlmmPool = await DLMM.create(connection, position.lbPair);
               const positionData = await dlmmPool.getPositionInfo(position.publicKey);
@@ -122,9 +122,9 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
                 tokenY: dlmmPool.tokenY.symbol || dlmmPool.tokenY.mint.toString(),
                 totalXAmount: positionData.totalXAmount,
                 totalYAmount: positionData.totalYAmount,
-                binIds: positionData.positionBinData.map(bin => bin.binId),
+                binIds: positionData.positionBinData.map((bin: any) => bin.binId),
               };
-            } catch (error) {
+            } catch (error: any) {
               return {
                 positionAddress: position.publicKey.toString(),
                 error: `Failed to fetch position details: ${error.message}`
@@ -139,7 +139,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
             text: JSON.stringify(positionDetails, null, 2)
           }]
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           content: [{
             type: "text",
@@ -158,7 +158,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
       poolAddress: z.string().describe("DLMM pool address"),
       positionAddress: z.string().describe("Position address"),
     },
-    async ({ poolAddress, positionAddress }) => {
+    async ({ poolAddress, positionAddress }: { poolAddress: string; positionAddress: string }) => {
       try {
         const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
         const fees = await dlmmPool.getClaimableFee(new PublicKey(positionAddress));
@@ -178,7 +178,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
             }, null, 2)
           }]
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           content: [{
             type: "text",
@@ -197,7 +197,7 @@ module.exports = function ({ config }: { config: z.infer<typeof configSchema> })
       poolAddress: z.string().describe("DLMM pool address"),
       positionAddress: z.string().describe("Position address"),
     },
-    async ({ poolAddress, positionAddress }) => {
+    async ({ poolAddress, positionAddress }: { poolAddress: string; positionAddress: string }) => {
       if (!wallet) {
         return {
           content: [{
@@ -233,7 +233,7 @@ Claimed Token Y: ${feesBefore.feeY.toString()}
 View on Solscan: https://solscan.io/tx/${signature}`
           }]
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           content: [{
             type: "text",
@@ -251,12 +251,12 @@ View on Solscan: https://solscan.io/tx/${signature}`
     {
       limit: z.number().optional().default(10).describe("Number of pools to return"),
     },
-    async ({ limit }) => {
+    async ({ limit }: { limit?: number }) => {
       try {
         const pools = await DLMM.getAllLbPairs(connection);
-        const popularPools = pools.slice(0, limit);
+        const popularPools = pools.slice(0, limit || 10);
         
-        const poolInfo = popularPools.map(pool => ({
+        const poolInfo = popularPools.map((pool: any) => ({
           address: pool.publicKey.toString(),
           tokenX: pool.tokenXMint.toString(),
           tokenY: pool.tokenYMint.toString(),
@@ -269,7 +269,7 @@ View on Solscan: https://solscan.io/tx/${signature}`
             text: JSON.stringify(poolInfo, null, 2)
           }]
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           content: [{
             type: "text",
