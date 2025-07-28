@@ -9,8 +9,8 @@ const { Connection, PublicKey, Keypair } = require("@solana/web3.js");
 // Configuration schema - reads from environment variables OR runtime config
 const configSchema = z.object({
   rpcUrl: z.string()
-    .default(process.env.RPC_URL || "https://api.mainnet-beta.solana.com")
-    .describe("Solana RPC URL (e.g., https://api.mainnet-beta.solana.com)"),
+    .default(process.env.RPC_URL || "https://solana-rpc.publicnode.com")
+    .describe("Solana RPC URL (e.g., https://solana-rpc.publicnode.com)"),
   walletPrivateKey: z.string()
     .optional()
     .default(process.env.WALLET_PRIVATE_KEY || undefined)
