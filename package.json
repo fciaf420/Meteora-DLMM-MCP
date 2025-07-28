@@ -1,0 +1,35 @@
+{
+  "name": "meteora-dlmm-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Meteora DLMM protocol interactions",
+  "main": "dist/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "smith build",
+    "dev": "smith dev",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mcp",
+    "meteora",
+    "dlmm",
+    "solana",
+    "defi"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@meteora-ag/dlmm": "^1.5.5",
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.2",
+    "bn.js": "^5.2.2",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "smithery-cli": "^0.5.1"
+  }
+}
