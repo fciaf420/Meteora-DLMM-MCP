@@ -1,12 +1,13 @@
-// Load environment variables from .env file
+// Hybrid Meteora DLMM MCP Server - API for reads, SDK for writes
 require('dotenv').config();
 
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { z } = require("zod");
 const { DLMM } = require("@meteora-ag/dlmm");
 const { Connection, PublicKey, Keypair } = require("@solana/web3.js");
+const https = require('https');
 
-// Configuration schema - reads from environment variables OR runtime config
+// Configuration schema
 const configSchema = z.object({
   rpcUrl: z.string()
     .default(process.env.RPC_URL || "https://solana-rpc.publicnode.com")
@@ -28,6 +29,7 @@ const configSchema = z.object({
 
 module.exports = function ({ config }: { config: any }) {
   const connection = new Connection(config.rpcUrl);
+  const apiBase = "https://dlmm-api.meteora.ag";
   
   // Initialize wallet if private key provided
   let wallet: any = null;
@@ -40,12 +42,32 @@ module.exports = function ({ config }: { config: any }) {
     }
   }
 
+  // Helper function for API calls
+  function apiCall(endpoint: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const url = `${apiBase}${endpoint}`;
+      if (config.debug) console.log(`API Call: ${url}`);
+      
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(new Error(`Failed to parse JSON: ${error.message}`));
+          }
+        });
+      }).on('error', reject);
+    });
+  }
+
   const server = new McpServer({
-    name: "Meteora DLMM MCP Server",
-    version: "1.0.0",
+    name: "Meteora DLMM MCP Server (Hybrid)",
+    version: "2.0.0",
   });
 
-  // Tool 1: Get Pool Information
+  // Tool 1: Get Pool Information (API-based)
   server.tool(
     "get_pool_info",
     "Get detailed information about a Meteora DLMM pool",
@@ -54,25 +76,25 @@ module.exports = function ({ config }: { config: any }) {
     },
     async ({ poolAddress }: { poolAddress: string }) => {
       try {
-        const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
-        const activeBin = await dlmmPool.getActiveBin();
-        const poolInfo = await dlmmPool.getPoolInfo();
+        const poolData = await apiCall(`/pair/${poolAddress}`);
+        
+        const result = {
+          poolAddress,
+          name: poolData.name,
+          tokenX: poolData.mint_x,
+          tokenY: poolData.mint_y,
+          activeBinId: poolData.active_bin_id,
+          fees24h: poolData.fees_24h || 0,
+          volume24h: poolData.volume_24h || 0,
+          liquidity: poolData.liquidity || "0",
+          currentPrice: poolData.current_price,
+          binStep: poolData.bin_step
+        };
         
         return {
           content: [{
             type: "text",
-            text: JSON.stringify({
-              poolAddress,
-              tokenX: dlmmPool.tokenX.mint.toString(),
-              tokenY: dlmmPool.tokenY.mint.toString(),
-              tokenXSymbol: dlmmPool.tokenX.symbol,
-              tokenYSymbol: dlmmPool.tokenY.symbol,
-              activeBinId: activeBin.binId,
-              activePrice: activeBin.price,
-              binStep: poolInfo.binStep,
-              fees24h: poolInfo.fees24h,
-              volume24h: poolInfo.volume24h,
-            }, null, 2)
+            text: JSON.stringify(result, null, 2)
           }]
         };
       } catch (error: any) {
@@ -86,7 +108,7 @@ module.exports = function ({ config }: { config: any }) {
     }
   );
 
-  // Tool 2: Get User Positions
+  // Tool 2: Get User Positions (API-based)
   server.tool(
     "get_user_positions",
     "Get all user positions for a wallet address",
@@ -95,6 +117,22 @@ module.exports = function ({ config }: { config: any }) {
     },
     async ({ userWallet }: { userWallet: string }) => {
       try {
+        // Try API approach first
+        try {
+          const positions = await apiCall(`/user/${userWallet}`);
+          if (positions && positions.length > 0) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify(positions, null, 2)
+              }]
+            };
+          }
+        } catch (apiError) {
+          if (config.debug) console.log('API user endpoint not available, using SDK fallback');
+        }
+        
+        // Fallback to SDK (might fail with restricted RPC)
         const userPositions = await DLMM.getAllLbPairPositionsByUser(
           connection, 
           new PublicKey(userWallet)
@@ -109,29 +147,10 @@ module.exports = function ({ config }: { config: any }) {
           };
         }
 
-        const positionDetails = await Promise.all(
-          userPositions.map(async (position: any) => {
-            try {
-              const dlmmPool = await DLMM.create(connection, position.lbPair);
-              const positionData = await dlmmPool.getPositionInfo(position.publicKey);
-              
-              return {
-                positionAddress: position.publicKey.toString(),
-                poolAddress: position.lbPair.toString(),
-                tokenX: dlmmPool.tokenX.symbol || dlmmPool.tokenX.mint.toString(),
-                tokenY: dlmmPool.tokenY.symbol || dlmmPool.tokenY.mint.toString(),
-                totalXAmount: positionData.totalXAmount,
-                totalYAmount: positionData.totalYAmount,
-                binIds: positionData.positionBinData.map((bin: any) => bin.binId),
-              };
-            } catch (error: any) {
-              return {
-                positionAddress: position.publicKey.toString(),
-                error: `Failed to fetch position details: ${error.message}`
-              };
-            }
-          })
-        );
+        const positionDetails = userPositions.map((position: any) => ({
+          positionAddress: position.publicKey.toString(),
+          poolAddress: position.lbPair.toString(),
+        }));
         
         return {
           content: [{
@@ -150,7 +169,51 @@ module.exports = function ({ config }: { config: any }) {
     }
   );
 
-  // Tool 3: Get Claimable Fees
+  // Tool 3: Get Popular Pools (API-based)
+  server.tool(
+    "get_popular_pools",
+    "Get list of popular Meteora DLMM pools",
+    {
+      limit: z.number().optional().default(10).describe("Number of pools to return"),
+    },
+    async ({ limit }: { limit?: number }) => {
+      try {
+        const allPairs = await apiCall('/pair/all');
+        
+        // Sort by liquidity and take top pools
+        const sortedPairs = allPairs
+          .filter((pair: any) => parseFloat(pair.liquidity || '0') > 0)
+          .sort((a: any, b: any) => parseFloat(b.liquidity || '0') - parseFloat(a.liquidity || '0'))
+          .slice(0, limit || 10);
+        
+        const poolInfo = sortedPairs.map((pool: any) => ({
+          address: pool.address,
+          name: pool.name,
+          tokenX: pool.mint_x,
+          tokenY: pool.mint_y,
+          liquidity: pool.liquidity,
+          volume24h: pool.volume_24h || 0,
+          fees24h: pool.fees_24h || 0
+        }));
+        
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(poolInfo, null, 2)
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: "text",
+            text: `Error fetching pools: ${error.message}`
+          }]
+        };
+      }
+    }
+  );
+
+  // Tool 4: Get Claimable Fees (Hybrid: API for pool info, SDK for fee calc)
   server.tool(
     "get_claimable_fees",
     "Get claimable fees for a specific position",
@@ -160,22 +223,22 @@ module.exports = function ({ config }: { config: any }) {
     },
     async ({ poolAddress, positionAddress }: { poolAddress: string; positionAddress: string }) => {
       try {
-        const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
-        const fees = await dlmmPool.getClaimableFee(new PublicKey(positionAddress));
+        // Get pool info from API
+        const poolData = await apiCall(`/pair/${poolAddress}`);
+        
+        // For now, return pool info - fee calculation would need SDK with unrestricted RPC
+        const result = {
+          positionAddress,
+          poolAddress,
+          poolName: poolData.name,
+          note: "Fee calculation requires SDK with unrestricted RPC endpoint",
+          suggestion: "Use a paid RPC provider (Helius, QuickNode) for fee calculations"
+        };
         
         return {
           content: [{
             type: "text",
-            text: JSON.stringify({
-              positionAddress,
-              poolAddress,
-              claimableTokenXFees: fees.feeX.toString(),
-              claimableTokenYFees: fees.feeY.toString(),
-              tokenXSymbol: dlmmPool.tokenX.symbol,
-              tokenYSymbol: dlmmPool.tokenY.symbol,
-              tokenXMint: dlmmPool.tokenX.mint.toString(),
-              tokenYMint: dlmmPool.tokenY.mint.toString(),
-            }, null, 2)
+            text: JSON.stringify(result, null, 2)
           }]
         };
       } catch (error: any) {
@@ -189,7 +252,7 @@ module.exports = function ({ config }: { config: any }) {
     }
   );
 
-  // Tool 4: Claim Fees (requires wallet)
+  // Tool 5: Claim Fees (SDK-based transaction)
   server.tool(
     "claim_fees",
     "Claim accumulated fees from a position (requires wallet configuration)",
@@ -208,12 +271,10 @@ module.exports = function ({ config }: { config: any }) {
       }
 
       try {
+        // This requires SDK and unrestricted RPC
         const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
         
-        // Get fees before claiming
-        const feesBefore = await dlmmPool.getClaimableFee(new PublicKey(positionAddress));
-        
-        const claimFeeTx = await dlmmPool.claimFee({
+        const claimFeeTx = await dlmmPool.claimSwapFee({
           owner: wallet.publicKey,
           position: new PublicKey(positionAddress),
         });
@@ -227,8 +288,6 @@ module.exports = function ({ config }: { config: any }) {
             text: `✅ Fees claimed successfully!
             
 Transaction: ${signature}
-Claimed Token X: ${feesBefore.feeX.toString()}
-Claimed Token Y: ${feesBefore.feeY.toString()}
             
 View on Solscan: https://solscan.io/tx/${signature}`
           }]
@@ -237,43 +296,9 @@ View on Solscan: https://solscan.io/tx/${signature}`
         return {
           content: [{
             type: "text",
-            text: `❌ Error claiming fees: ${error.message}`
-          }]
-        };
-      }
-    }
-  );
+            text: `❌ Error claiming fees: ${error.message}
 
-  // Tool 5: Get Pool List
-  server.tool(
-    "get_popular_pools",
-    "Get list of popular Meteora DLMM pools",
-    {
-      limit: z.number().optional().default(10).describe("Number of pools to return"),
-    },
-    async ({ limit }: { limit?: number }) => {
-      try {
-        const pools = await DLMM.getAllLbPairs(connection);
-        const popularPools = pools.slice(0, limit || 10);
-        
-        const poolInfo = popularPools.map((pool: any) => ({
-          address: pool.publicKey.toString(),
-          tokenX: pool.tokenXMint.toString(),
-          tokenY: pool.tokenYMint.toString(),
-          binStep: pool.binStep,
-        }));
-        
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify(poolInfo, null, 2)
-          }]
-        };
-      } catch (error: any) {
-        return {
-          content: [{
-            type: "text",
-            text: `Error fetching pools: ${error.message}`
+Note: This operation requires an unrestricted RPC endpoint. Consider upgrading to a paid RPC provider.`
           }]
         };
       }
