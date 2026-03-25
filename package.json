@@ -1,6 +1,6 @@
 {
   "name": "meteora-dlmm-mcp",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "MCP server for Meteora DLMM — pool discovery, positions, swaps, liquidity, fees, rewards, and zap",
   "main": "dist/index.js",
   "type": "commonjs",

@@ -10,16 +10,12 @@ RUN npm ci
 
 # Copy source code
 COPY src/ ./src/
-COPY smithery.config.js ./
 
 # Build TypeScript
-RUN npm run compile
+RUN npm run build
 
 # Remove dev dependencies to reduce image size
 RUN npm prune --production
 
-# Expose port
-EXPOSE 8000
-
-# Start the server
+# Start the server via stdio
 CMD ["node", "dist/index.js"]
