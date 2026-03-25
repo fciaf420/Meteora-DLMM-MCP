@@ -22,7 +22,6 @@ try {
 // Constants
 // ---------------------------------------------------------------------------
 const CHARACTER_LIMIT = 25000;
-const API = "https://dlmm-api.meteora.ag";
 const DATAPI = "https://dlmm.datapi.meteora.ag";
 
 // ---------------------------------------------------------------------------
@@ -246,64 +245,74 @@ server.registerTool(
   {
     title: "Search DLMM Pools",
     description:
-      "Search and list Meteora DLMM liquidity pools sorted by liquidity, volume, or fees. " +
-      "Returns an array of pool objects with name, address, token mints, binStep, liquidity, " +
-      "24h volume/fees, current price, and APR. Supports pagination via offset parameter. " +
+      "Search and list Meteora DLMM liquidity pools sorted by TVL, volume, fees, or fee/TVL ratio. " +
+      "Returns pool objects with name, address, tokens (with symbol/decimals/price), bin config, " +
+      "TVL, 24h volume/fees, fee/TVL ratio, APR/APY, and current price. Server-side pagination. " +
       "Read-only operation. Rate limit: 30 req/s.",
     inputSchema: {
       limit: z
         .number()
         .int()
         .min(1)
-        .max(100)
-        .default(20)
-        .describe("Number of pools to return per page (1-100)"),
-      offset: z
+        .max(50)
+        .default(10)
+        .describe("Number of pools to return per page (1-50)"),
+      page: z
         .number()
         .int()
-        .min(0)
-        .default(0)
-        .describe("Number of pools to skip for pagination (0-based)"),
+        .min(1)
+        .default(1)
+        .describe("Page number (1-based)"),
       sort_by: z
-        .enum(["liquidity", "volume", "fees"])
-        .default("liquidity")
-        .describe("Sort field: liquidity, volume, or fees"),
+        .enum(["tvl", "volume_24h", "fees_24h", "fee_tvl_ratio_24h"])
+        .default("tvl")
+        .describe("Sort field: tvl, volume_24h, fees_24h, or fee_tvl_ratio_24h"),
+      order: z
+        .enum(["asc", "desc"])
+        .default("desc")
+        .describe("Sort order: asc or desc"),
     },
     annotations: READ_ONLY_ANNOTATIONS,
   },
-  async ({ limit, offset, sort_by }: { limit: number; offset: number; sort_by: string }) => {
+  async ({ limit, page, sort_by, order }: { limit: number; page: number; sort_by: string; order: string }) => {
     try {
-      const allPairs = (await apiGet(`${API}/pair/all`)) as Array<Record<string, string>>;
-      const field =
-        sort_by === "volume"
-          ? "trade_volume_24h"
-          : sort_by === "fees"
-          ? "fees_24h"
-          : "liquidity";
-      const filtered = allPairs
-        .filter((p) => parseFloat(p.liquidity || "0") > 0)
-        .sort((a, b) => parseFloat(b[field] || "0") - parseFloat(a[field] || "0"));
-      const total = filtered.length;
-      const paged = filtered.slice(offset, offset + limit);
-      const pools: PoolSummary[] = paged.map((p) => ({
-        address: p.address,
-        name: p.name,
-        mintX: p.mint_x,
-        mintY: p.mint_y,
-        binStep: parseInt(p.bin_step, 10),
-        liquidity: p.liquidity,
-        volume24h: p.trade_volume_24h,
-        fees24h: p.fees_24h,
-        currentPrice: p.current_price,
-        apr: p.apr,
-      }));
+      const sortKeyMap: Record<string, string> = {
+        tvl: "tvl",
+        volume_24h: "volume_24h",
+        fees_24h: "fees_24h",
+        fee_tvl_ratio_24h: "fee_tvl_ratio_24h",
+      };
+      const url = `${DATAPI}/pools?page=${page}&limit=${limit}&sort_key=${sortKeyMap[sort_by] || "tvl"}&order_by=${order}`;
+      const data = (await apiGet(url)) as { total: number; pages: number; current_page: number; page_size: number; data: Array<Record<string, unknown>> };
+      const pools = (data.data || []).map((p: Record<string, unknown>) => {
+        const tokenX = p.token_x as Record<string, unknown> || {};
+        const tokenY = p.token_y as Record<string, unknown> || {};
+        const volume = p.volume as Record<string, number> || {};
+        const fees = p.fees as Record<string, number> || {};
+        const feeTvl = p.fee_tvl_ratio as Record<string, number> || {};
+        const config = p.pool_config as Record<string, unknown> || {};
+        return {
+          address: p.address,
+          name: p.name,
+          tokenX: { symbol: tokenX.symbol, mint: tokenX.address, decimals: tokenX.decimals },
+          tokenY: { symbol: tokenY.symbol, mint: tokenY.address, decimals: tokenY.decimals },
+          binStep: config.bin_step,
+          tvl: p.tvl,
+          volume24h: volume["24h"],
+          fees24h: fees["24h"],
+          feeTvlRatio24h: feeTvl["24h"],
+          currentPrice: p.current_price,
+          apr: p.apr,
+          apy: p.apy,
+          dynamicFeePct: p.dynamic_fee_pct,
+        };
+      });
       return ok({
-        total,
+        total: data.total,
+        pages: data.pages,
+        currentPage: data.current_page,
         count: pools.length,
-        offset,
         pools,
-        has_more: offset + limit < total,
-        next_offset: offset + limit < total ? offset + limit : null,
       });
     } catch (e: unknown) {
       return fail((e as Error).message);
@@ -331,23 +340,31 @@ server.registerTool(
   },
   async ({ pool_address }: { pool_address: string }) => {
     try {
-      const d = (await apiGet(`${API}/pair/${pool_address}`)) as Record<string, string>;
-      const result: PoolDetail = {
+      const d = (await apiGet(`${DATAPI}/pools/${pool_address}`)) as Record<string, unknown>;
+      const tokenX = d.token_x as Record<string, unknown> || {};
+      const tokenY = d.token_y as Record<string, unknown> || {};
+      const volume = d.volume as Record<string, number> || {};
+      const fees = d.fees as Record<string, number> || {};
+      const feeTvl = d.fee_tvl_ratio as Record<string, number> || {};
+      const config = d.pool_config as Record<string, unknown> || {};
+      return ok({
         address: d.address,
         name: d.name,
-        mintX: d.mint_x,
-        mintY: d.mint_y,
-        binStep: parseInt(d.bin_step, 10),
-        activeBinId: parseInt(d.active_bin_id, 10),
+        tokenX: { symbol: tokenX.symbol, mint: tokenX.address, decimals: tokenX.decimals, price: tokenX.price },
+        tokenY: { symbol: tokenY.symbol, mint: tokenY.address, decimals: tokenY.decimals, price: tokenY.price },
+        binStep: config.bin_step,
+        baseFeePct: config.base_fee_pct,
+        tvl: d.tvl,
         currentPrice: d.current_price,
-        liquidity: d.liquidity,
-        volume24h: d.trade_volume_24h,
-        fees24h: d.fees_24h,
+        volume24h: volume["24h"],
+        fees24h: fees["24h"],
+        feeTvlRatio24h: feeTvl["24h"],
         apr: d.apr,
-        reserveX: d.reserve_x_amount,
-        reserveY: d.reserve_y_amount,
-      };
-      return ok(result);
+        apy: d.apy,
+        dynamicFeePct: d.dynamic_fee_pct,
+        tokenXAmount: d.token_x_amount,
+        tokenYAmount: d.token_y_amount,
+      });
     } catch (e: unknown) {
       return classifyError(e as Error, pool_address);
     }
@@ -1149,16 +1166,8 @@ server.registerTool(
         `${DATAPI}/pools/${pool_address}/ohlcv?resolution=${resolution}&limit=${limit}`
       );
       return ok(data);
-    } catch {
-      // Fallback to legacy API
-      try {
-        const data = await apiGet(
-          `${API}/pair/${pool_address}/ohlcv?timeframe=${resolution}&limit=${limit}`
-        );
-        return ok(data);
-      } catch (e2: unknown) {
-        return classifyError(e2 as Error, pool_address);
-      }
+    } catch (e: unknown) {
+      return classifyError(e as Error, pool_address);
     }
   }
 );

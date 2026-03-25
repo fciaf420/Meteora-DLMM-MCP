@@ -174,7 +174,7 @@ These tools build and submit transactions to the Solana network. They require bo
 
 The server is structured as a hybrid that selects the best data source for each operation:
 
-- **API layer**: Queries `dlmm-api.meteora.ag` (legacy, reliable) and `dlmm.datapi.meteora.ag` (newer endpoints for OHLCV, volume, and protocol stats) for off-chain aggregated data. No RPC needed.
+- **API layer**: Queries `dlmm.datapi.meteora.ag` for pools, OHLCV, volume history, and protocol stats. No RPC needed.
 - **SDK layer**: Uses `@meteora-ag/dlmm` for on-chain reads (active bin, positions, bin liquidity, swap quotes, fee info) and transaction construction (swaps, liquidity operations, fee claims).
 - **Zap layer**: Uses `@meteora-ag/zap-sdk` for single-token deposits that automatically handle the swap-and-deposit flow.
 - **Transport**: stdio, designed for local coding agent integration. The agent spawns the server as a child process and communicates over stdin/stdout using the MCP protocol.
