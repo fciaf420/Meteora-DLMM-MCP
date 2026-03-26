@@ -1138,34 +1138,43 @@ server.registerTool(
       const strategyMap: Record<string, number> = { Spot: 0, Curve: 1, BidAsk: 2 };
       const strategy = strategyMap[params.strategy] || 0;
 
-      // Always route through Jupiter (indirect) for best execution
+      // Direct route if input is a pool token, indirect (Jupiter) if external
+      const dlmm = await DLMM.create(connection, lbPair);
+      const isPoolToken = dlmm.tokenX.publicKey.equals(inputTokenMint) || dlmm.tokenY.publicKey.equals(inputTokenMint);
       const zap = new ZapSDK.Zap(connection);
 
-      const estimate = await ZapSDK.estimateDlmmIndirectSwap({
-        amountIn,
-        inputTokenMint,
-        lbPair,
-        connection,
-        swapSlippageBps: params.slippage_bps,
-        minDeltaId: params.min_delta_id,
-        maxDeltaId: params.max_delta_id,
-        strategy,
-      });
-      const zapParams = await zap.getZapInDlmmIndirectParams({
-        user: wallet.publicKey,
-        lbPair,
-        inputTokenMint,
-        amountIn,
-        maxActiveBinSlippage: 5,
-        minDeltaId: params.min_delta_id,
-        maxDeltaId: params.max_delta_id,
-        strategy,
-        favorXInActiveId: false,
-        maxAccounts: 30,
-        swapSlippageBps: params.slippage_bps,
-        maxTransferAmountExtendPercentage: 5,
-        indirectSwapEstimate: estimate.result,
-      });
+      let zapParams: unknown;
+      if (isPoolToken) {
+        const estimate = await ZapSDK.estimateDlmmDirectSwap({
+          amountIn, inputTokenMint, lbPair, connection,
+          swapSlippageBps: params.slippage_bps,
+          minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+        });
+        zapParams = await zap.getZapInDlmmDirectParams({
+          user: wallet.publicKey, lbPair, inputTokenMint, amountIn,
+          maxActiveBinSlippage: 5,
+          minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+          favorXInActiveId: false, maxAccounts: 30,
+          swapSlippageBps: params.slippage_bps,
+          maxTransferAmountExtendPercentage: 5,
+          directSwapEstimate: estimate.result,
+        });
+      } else {
+        const estimate = await ZapSDK.estimateDlmmIndirectSwap({
+          amountIn, inputTokenMint, lbPair, connection,
+          swapSlippageBps: params.slippage_bps,
+          minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+        });
+        zapParams = await zap.getZapInDlmmIndirectParams({
+          user: wallet.publicKey, lbPair, inputTokenMint, amountIn,
+          maxActiveBinSlippage: 5,
+          minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+          favorXInActiveId: false, maxAccounts: 30,
+          swapSlippageBps: params.slippage_bps,
+          maxTransferAmountExtendPercentage: 5,
+          indirectSwapEstimate: estimate.result,
+        });
+      }
 
       const positionKeypair = Keypair.generate();
       const zapResult = await zap.buildZapInDlmmTransaction({
