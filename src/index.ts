@@ -1303,26 +1303,37 @@ server.registerTool(
       const tokenToSwap = outputMint.equals(tokenXMint) ? tokenYMint : tokenXMint;
 
       // 3. Get token balance to swap
-      const { TOKEN_PROGRAM_ID } = require("@solana/spl-token");
       const tokenAccounts = await connection.getTokenAccountsByOwner(wallet.publicKey, { mint: tokenToSwap });
       if (tokenAccounts.value.length > 0) {
         const accountInfo = await connection.getTokenAccountBalance(tokenAccounts.value[0].pubkey);
         const swapAmount = accountInfo.value.amount;
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
-          // 4. Get Jupiter quote and swap
+          // 4. Jupiter quote -> swap instruction -> zapOutThroughJupiter
+          const inputTokenProgram = await ZapSDK.getTokenProgramFromMint(connection, tokenToSwap);
+          const outputTokenProgram = await ZapSDK.getTokenProgramFromMint(connection, outputMint);
+
           const jupQuote = await ZapSDK.getJupiterQuote(
             tokenToSwap, outputMint, new BN(swapAmount),
-            30, params.slippage_bps, true, false, false,
+            40, params.slippage_bps, true, true, true,
           );
           if (jupQuote) {
-            const jupSwapResult = await ZapSDK.buildJupiterSwapTransaction(
-              wallet.publicKey, tokenToSwap, outputMint,
-              new BN(swapAmount), 30, params.slippage_bps, jupQuote,
+            const jupSwapInstruction = await ZapSDK.getJupiterSwapInstruction(
+              wallet.publicKey, jupQuote,
             );
-            if (jupSwapResult && jupSwapResult.transaction) {
-              signatures.push(await sendAndConfirm(jupSwapResult.transaction, [wallet]));
-            }
+
+            const zap = new ZapSDK.Zap(connection);
+            const zapOutTx = await zap.zapOutThroughJupiter({
+              user: wallet.publicKey,
+              inputMint: tokenToSwap,
+              outputMint,
+              inputTokenProgram,
+              outputTokenProgram,
+              jupiterSwapResponse: jupSwapInstruction,
+              maxSwapAmount: new BN(swapAmount),
+              percentageToZapOut: 100,
+            });
+            signatures.push(await sendAndConfirm(zapOutTx, [wallet]));
           }
         }
       }
