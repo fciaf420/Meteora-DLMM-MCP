@@ -1326,28 +1326,41 @@ server.registerTool(
         const swapAmount = accountInfo.value.amount;
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
-          // 4. Swap remaining tokens to output via Jupiter
-          // Get fresh quote with dynamic slippage, then build tx immediately
+          // 4. Swap remaining tokens to output via Jupiter API directly
           const swapSlippage = Math.max(params.slippage_bps, 1000);
-          const jupQuote = await ZapSDK.getJupiterQuote(
-            tokenToSwap, outputMint, new BN(swapAmount),
-            40, swapSlippage, true, false, false, JUP_CONFIG,
-          );
-          const jupSwapResult = jupQuote ? await ZapSDK.buildJupiterSwapTransaction(
-            wallet.publicKey, tokenToSwap, outputMint,
-            new BN(swapAmount), 40, swapSlippage, jupQuote, JUP_CONFIG,
-          ) : null;
-          if (jupSwapResult && jupSwapResult.transaction) {
-            const sig: string = await connection.sendTransaction(
-              jupSwapResult.transaction as any, [wallet] as any[], sendOpts
-            );
-            await connection.confirmTransaction(sig, "confirmed");
-            // Verify the swap succeeded on-chain
-            const txResult = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
-            if (txResult?.meta?.err) {
-              return fail(`Position closed but Jupiter swap failed on-chain: ${JSON.stringify(txResult.meta.err)}. Your ${tokenToSwap.toString()} tokens are in your wallet — swap them manually.`);
+          const jupApiBase = JUP_CONFIG.jupiterApiUrl;
+          const jupHeaders: Record<string, string> = { "Content-Type": "application/json" };
+          if (JUP_CONFIG.jupiterApiKey) jupHeaders["x-api-key"] = JUP_CONFIG.jupiterApiKey;
+
+          // Get quote
+          const quoteUrl = `${jupApiBase}/swap/v1/quote?inputMint=${tokenToSwap.toString()}&outputMint=${outputMint.toString()}&amount=${swapAmount}&slippageBps=${swapSlippage}&dynamicSlippage=true`;
+          const quoteRes = await fetch(quoteUrl, { headers: jupHeaders });
+          const quoteData = await quoteRes.json() as Record<string, unknown>;
+
+          if (quoteData && quoteData.outAmount) {
+            // Get swap transaction
+            const swapRes = await fetch(`${jupApiBase}/swap/v1/swap`, {
+              method: "POST",
+              headers: jupHeaders,
+              body: JSON.stringify({
+                quoteResponse: quoteData,
+                userPublicKey: wallet.publicKey.toString(),
+                dynamicSlippage: { maxBps: swapSlippage },
+                wrapAndUnwrapSol: true,
+              }),
+            });
+            const swapData = await swapRes.json() as Record<string, unknown>;
+
+            if (swapData && swapData.swapTransaction) {
+              // Deserialize, sign, and send the versioned transaction
+              const { VersionedTransaction: VTx } = require("@solana/web3.js");
+              const swapTxBuf = Buffer.from(swapData.swapTransaction as string, "base64");
+              const swapTx = VTx.deserialize(swapTxBuf);
+              swapTx.sign([wallet]);
+              const sig: string = await connection.sendRawTransaction(swapTx.serialize(), sendOpts);
+              await connection.confirmTransaction(sig, "confirmed");
+              signatures.push(sig);
             }
-            signatures.push(sig);
           }
         }
       }
