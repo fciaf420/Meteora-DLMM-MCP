@@ -1488,11 +1488,75 @@ server.registerTool(
   }
 );
 
+// =========================================================================
+//  19. GET POSITION PNL
+// =========================================================================
+server.registerTool(
+  "meteora_get_position_pnl",
+  {
+    title: "Get Position PnL",
+    description:
+      "Get profit-and-loss data for DLMM positions in a pool for a specific wallet. " +
+      "Returns per-position PnL including fees earned, rewards, deposits, withdrawals, and net profit. " +
+      "Can filter by position status (open, closed, or all). " +
+      "Read-only operation. Uses Meteora datapi — no RPC needed.",
+    inputSchema: {
+      pool_address: z
+        .string()
+        .describe("Pool public key address (base58-encoded Solana address)"),
+      wallet_address: z
+        .string()
+        .describe("User wallet public key address (base58-encoded Solana address)"),
+      status: z
+        .enum(["open", "closed", "all"])
+        .default("open")
+        .describe("Filter positions by status: open, closed, or all"),
+      page: z
+        .number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe("Page number for pagination (starts at 1)"),
+      page_size: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(100)
+        .describe("Number of positions per page (max 100)"),
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  async ({
+    pool_address,
+    wallet_address,
+    status,
+    page,
+    page_size,
+  }: {
+    pool_address: string;
+    wallet_address: string;
+    status: string;
+    page: number;
+    page_size: number;
+  }) => {
+    try {
+      const url =
+        `${DATAPI}/positions/${pool_address}/pnl` +
+        `?user=${wallet_address}&status=${status}&pageSize=${page_size}&page=${page}`;
+      const data = await apiGet(url) as Record<string, unknown>;
+      return ok(data);
+    } catch (e: unknown) {
+      return classifyError(e as Error, pool_address);
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Main — connect to stdio transport
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
-  console.error("[meteora-dlmm-mcp] Starting server with 18 tools...");
+  console.error("[meteora-dlmm-mcp] Starting server with 19 tools...");
   console.error(`[meteora-dlmm-mcp] RPC: ${RPC_URL}`);
   console.error(
     `[meteora-dlmm-mcp] Wallet: ${wallet ? wallet.publicKey.toString() : "not configured"}`
