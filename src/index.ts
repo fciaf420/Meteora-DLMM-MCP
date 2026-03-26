@@ -1326,31 +1326,13 @@ server.registerTool(
         const swapAmount = accountInfo.value.amount;
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
-          // 4. Jupiter quote -> swap instruction -> zapOutThroughJupiter
-          const inputTokenProgram = await ZapSDK.getTokenProgramFromMint(connection, tokenToSwap);
-          const outputTokenProgram = await ZapSDK.getTokenProgramFromMint(connection, outputMint);
-
-          const jupQuote = await ZapSDK.getJupiterQuote(
-            tokenToSwap, outputMint, new BN(swapAmount),
-            40, params.slippage_bps, true, true, true, JUP_CONFIG,
+          // 4. Swap remaining tokens to output via Jupiter
+          const jupSwapResult = await ZapSDK.buildJupiterSwapTransaction(
+            wallet.publicKey, tokenToSwap, outputMint,
+            new BN(swapAmount), 40, params.slippage_bps, undefined, JUP_CONFIG,
           );
-          if (jupQuote) {
-            const jupSwapInstruction = await ZapSDK.getJupiterSwapInstruction(
-              wallet.publicKey, jupQuote, JUP_CONFIG,
-            );
-
-            const zap = new ZapSDK.Zap(connection, JUP_CONFIG);
-            const zapOutTx = await zap.zapOutThroughJupiter({
-              user: wallet.publicKey,
-              inputMint: tokenToSwap,
-              outputMint,
-              inputTokenProgram,
-              outputTokenProgram,
-              jupiterSwapResponse: jupSwapInstruction,
-              maxSwapAmount: new BN(swapAmount),
-              percentageToZapOut: 100,
-            });
-            signatures.push(await sendAndConfirm(zapOutTx, [wallet]));
+          if (jupSwapResult && jupSwapResult.transaction) {
+            signatures.push(await sendAndConfirm(jupSwapResult.transaction, [wallet]));
           }
         }
       }
