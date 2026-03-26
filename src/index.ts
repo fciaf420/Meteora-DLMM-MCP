@@ -8,6 +8,7 @@ const { z } = require("zod");
 const DLMM = require("@meteora-ag/dlmm");
 const { Connection, PublicKey, Keypair } = require("@solana/web3.js");
 const BN = require("bn.js");
+const bs58 = require("bs58");
 const https = require("https");
 
 // Optional Zap SDK
@@ -106,15 +107,20 @@ function makeConnection(rpcUrl: string): InstanceType<typeof Connection> {
 
 function loadKeypair(privateKey?: string): InstanceType<typeof Keypair> | null {
   if (!privateKey) return null;
+  // Try JSON byte-array
   try {
     return Keypair.fromSecretKey(new Uint8Array(JSON.parse(privateKey)));
+  } catch { /* not JSON */ }
+  // Try base58
+  try {
+    return Keypair.fromSecretKey(bs58.decode(privateKey));
+  } catch { /* not base58 */ }
+  // Try base64
+  try {
+    return Keypair.fromSecretKey(Buffer.from(privateKey, "base64"));
   } catch {
-    try {
-      return Keypair.fromSecretKey(Buffer.from(privateKey, "base64"));
-    } catch {
-      console.error("[meteora-dlmm-mcp] Invalid WALLET_PRIVATE_KEY format.");
-      return null;
-    }
+    console.error("[meteora-dlmm-mcp] Invalid WALLET_PRIVATE_KEY format (tried JSON, base58, base64).");
+    return null;
   }
 }
 
