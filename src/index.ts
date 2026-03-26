@@ -5,13 +5,13 @@ require("dotenv").config();
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
-const { DLMM } = require("@meteora-ag/dlmm");
+const DLMM = require("@meteora-ag/dlmm");
 const { Connection, PublicKey, Keypair } = require("@solana/web3.js");
 const BN = require("bn.js");
 const https = require("https");
 
 // Optional Zap SDK
-let ZapSDK: { Zap: any } | null = null;
+let ZapSDK: { Zap: any; estimateDlmmDirectSwap: any; estimateDlmmIndirectSwap: any; [key: string]: any } | null = null;
 try {
   ZapSDK = require("@meteora-ag/zap-sdk");
 } catch {
@@ -1075,7 +1075,9 @@ server.registerTool(
     description:
       "Zap into a DLMM position with a single token using Meteora's Zap SDK. Automatically swaps " +
       "the input token into both pool tokens and deposits them as a new position. " +
-      "Returns transaction signature and position details. " +
+      "Uses delta bin IDs relative to the active bin (e.g. min_delta=-34, max_delta=34 for 69 bins centered). " +
+      "Supports Spot (0), Curve (1), and BidAsk (2) strategies. " +
+      "Returns transaction signature(s) and position details. " +
       "WRITE operation — requires WALLET_PRIVATE_KEY and the @meteora-ag/zap-sdk package installed.",
     inputSchema: {
       pool_address: z
@@ -1087,14 +1089,25 @@ server.registerTool(
       input_amount: z
         .string()
         .describe("Amount in lamports / smallest unit to zap in"),
-      lower_bin_id: z
+      min_delta_id: z
         .number()
         .int()
-        .describe("Lower bin ID for the new position"),
-      upper_bin_id: z
+        .describe("Min bin delta relative to active bin (negative = below active bin)"),
+      max_delta_id: z
         .number()
         .int()
-        .describe("Upper bin ID for the new position"),
+        .describe("Max bin delta relative to active bin (positive = above active bin)"),
+      strategy: z
+        .enum(["Spot", "Curve", "BidAsk"])
+        .default("Spot")
+        .describe("Liquidity distribution strategy"),
+      slippage_bps: z
+        .number()
+        .int()
+        .min(0)
+        .max(10000)
+        .default(100)
+        .describe("Swap slippage tolerance in basis points (100 = 1%)"),
     },
     annotations: WRITE_ANNOTATIONS,
   },
@@ -1102,8 +1115,10 @@ server.registerTool(
     pool_address: string;
     input_token_mint: string;
     input_amount: string;
-    lower_bin_id: number;
-    upper_bin_id: number;
+    min_delta_id: number;
+    max_delta_id: number;
+    strategy: string;
+    slippage_bps: number;
   }) => {
     if (!wallet) return walletError();
     if (!ZapSDK)
@@ -1111,30 +1126,104 @@ server.registerTool(
         "Zap SDK not installed. Install it with: npm install @meteora-ag/zap-sdk"
       );
     try {
+      const lbPair = new PublicKey(params.pool_address);
+      const inputTokenMint = new PublicKey(params.input_token_mint);
+      const amountIn = new BN(params.input_amount);
+      const strategyMap: Record<string, number> = { Spot: 0, Curve: 1, BidAsk: 2 };
+      const strategy = strategyMap[params.strategy] || 0;
+
+      // Check if input token is one of the pool tokens (direct route)
+      const dlmm = await DLMM.create(connection, lbPair);
+      const isTokenX = dlmm.tokenX.publicKey.equals(inputTokenMint);
+      const isTokenY = dlmm.tokenY.publicKey.equals(inputTokenMint);
+      const isDirect = isTokenX || isTokenY;
+
       const zap = new ZapSDK.Zap(connection);
-      const result = await zap.zapInDlmm({
-        pairAddress: new PublicKey(params.pool_address),
-        inputTokenMint: new PublicKey(params.input_token_mint),
-        inputAmount: new BN(params.input_amount),
-        lowerBinId: params.lower_bin_id,
-        upperBinId: params.upper_bin_id,
-        user: wallet.publicKey,
+
+      let zapParams: unknown;
+      if (isDirect) {
+        const estimate = await ZapSDK.estimateDlmmDirectSwap({
+          amountIn,
+          inputTokenMint,
+          lbPair,
+          connection,
+          swapSlippageBps: params.slippage_bps,
+          minDeltaId: params.min_delta_id,
+          maxDeltaId: params.max_delta_id,
+          strategy,
+        });
+        zapParams = await zap.getZapInDlmmDirectParams({
+          user: wallet.publicKey,
+          lbPair,
+          inputTokenMint,
+          amountIn,
+          maxActiveBinSlippage: 5,
+          minDeltaId: params.min_delta_id,
+          maxDeltaId: params.max_delta_id,
+          strategy,
+          favorXInActiveId: false,
+          maxAccounts: 30,
+          swapSlippageBps: params.slippage_bps,
+          maxTransferAmountExtendPercentage: 5,
+          directSwapEstimate: estimate.result,
+        });
+      } else {
+        const estimate = await ZapSDK.estimateDlmmIndirectSwap({
+          amountIn,
+          inputTokenMint,
+          lbPair,
+          connection,
+          swapSlippageBps: params.slippage_bps,
+          minDeltaId: params.min_delta_id,
+          maxDeltaId: params.max_delta_id,
+          strategy,
+        });
+        zapParams = await zap.getZapInDlmmIndirectParams({
+          user: wallet.publicKey,
+          lbPair,
+          inputTokenMint,
+          amountIn,
+          maxActiveBinSlippage: 5,
+          minDeltaId: params.min_delta_id,
+          maxDeltaId: params.max_delta_id,
+          strategy,
+          favorXInActiveId: false,
+          maxAccounts: 30,
+          swapSlippageBps: params.slippage_bps,
+          maxTransferAmountExtendPercentage: 5,
+          indirectSwapEstimate: estimate.result,
+        });
+      }
+
+      const positionKeypair = Keypair.generate();
+      const zapResult = await zap.buildZapInDlmmTransaction({
+        ...(zapParams as Record<string, unknown>),
+        position: positionKeypair.publicKey,
       });
-      const tx = result.transaction || result;
-      const sig: string = await connection.sendTransaction(tx, [wallet]);
-      await connection.confirmTransaction(sig);
+
+      // Send transactions (may be multiple)
+      const signatures: string[] = [];
+      const txs = zapResult.transactions || [zapResult.transaction || zapResult];
+      for (const tx of Array.isArray(txs) ? txs : [txs]) {
+        if (!tx) continue;
+        const sig: string = await connection.sendTransaction(tx, [wallet, positionKeypair]);
+        await connection.confirmTransaction(sig);
+        signatures.push(sig);
+      }
       return ok({
         success: true,
         pool: params.pool_address,
         inputToken: params.input_token_mint,
         inputAmount: params.input_amount,
-        binRange: [params.lower_bin_id, params.upper_bin_id],
-        signature: sig,
-        solscan: `https://solscan.io/tx/${sig}`,
+        positionAddress: positionKeypair.publicKey.toString(),
+        binRange: { minDelta: params.min_delta_id, maxDelta: params.max_delta_id },
+        strategy: params.strategy,
+        signatures,
+        solscanLinks: signatures.map((s: string) => `https://solscan.io/tx/${s}`),
       });
     } catch (e: unknown) {
       return fail(
-        `Zap failed: ${(e as Error).message}. The Zap SDK method signature may have changed — check @meteora-ag/zap-sdk docs.`
+        `Zap failed: ${(e as Error).message}`
       );
     }
   }
