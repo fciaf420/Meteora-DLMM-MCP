@@ -30,7 +30,13 @@ const DATAPI = "https://dlmm.datapi.meteora.ag";
 // ---------------------------------------------------------------------------
 const RPC_URL: string = process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
 const WALLET_PRIVATE_KEY: string | undefined = process.env.WALLET_PRIVATE_KEY || undefined;
+const JUPITER_API_KEY: string | undefined = process.env.JUPITER_API_KEY || undefined;
 const DEBUG: boolean = process.env.DEBUG === "true";
+
+// Jupiter config: use paid api.jup.ag if key provided, otherwise free lite-api
+const JUP_CONFIG: { jupiterApiUrl: string; jupiterApiKey?: string } = JUPITER_API_KEY
+  ? { jupiterApiUrl: "https://api.jup.ag", jupiterApiKey: JUPITER_API_KEY }
+  : { jupiterApiUrl: "https://lite-api.jup.ag" };
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -1141,7 +1147,7 @@ server.registerTool(
       // Direct route if input is a pool token, indirect (Jupiter) if external
       const dlmm = await DLMM.create(connection, lbPair);
       const isPoolToken = dlmm.tokenX.publicKey.equals(inputTokenMint) || dlmm.tokenY.publicKey.equals(inputTokenMint);
-      const zap = new ZapSDK.Zap(connection);
+      const zap = new ZapSDK.Zap(connection, JUP_CONFIG);
 
       let zapParams: unknown;
       if (isPoolToken) {
@@ -1149,6 +1155,7 @@ server.registerTool(
           amountIn, inputTokenMint, lbPair, connection,
           swapSlippageBps: params.slippage_bps,
           minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+          config: JUP_CONFIG,
         });
         zapParams = await zap.getZapInDlmmDirectParams({
           user: wallet.publicKey, lbPair, inputTokenMint, amountIn,
@@ -1164,6 +1171,7 @@ server.registerTool(
           amountIn, inputTokenMint, lbPair, connection,
           swapSlippageBps: params.slippage_bps,
           minDeltaId: params.min_delta_id, maxDeltaId: params.max_delta_id, strategy,
+          config: JUP_CONFIG,
         });
         zapParams = await zap.getZapInDlmmIndirectParams({
           user: wallet.publicKey, lbPair, inputTokenMint, amountIn,
@@ -1324,14 +1332,14 @@ server.registerTool(
 
           const jupQuote = await ZapSDK.getJupiterQuote(
             tokenToSwap, outputMint, new BN(swapAmount),
-            40, params.slippage_bps, true, true, true,
+            40, params.slippage_bps, true, true, true, JUP_CONFIG,
           );
           if (jupQuote) {
             const jupSwapInstruction = await ZapSDK.getJupiterSwapInstruction(
-              wallet.publicKey, jupQuote,
+              wallet.publicKey, jupQuote, JUP_CONFIG,
             );
 
-            const zap = new ZapSDK.Zap(connection);
+            const zap = new ZapSDK.Zap(connection, JUP_CONFIG);
             const zapOutTx = await zap.zapOutThroughJupiter({
               user: wallet.publicKey,
               inputMint: tokenToSwap,
@@ -1480,6 +1488,7 @@ async function main(): Promise<void> {
     `[meteora-dlmm-mcp] Wallet: ${wallet ? wallet.publicKey.toString() : "not configured"}`
   );
   console.error(`[meteora-dlmm-mcp] Zap SDK: ${ZapSDK ? "available" : "not installed"}`);
+  console.error(`[meteora-dlmm-mcp] Jupiter API: ${JUP_CONFIG.jupiterApiUrl}${JUPITER_API_KEY ? " (with API key)" : " (free tier)"}`);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
