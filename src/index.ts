@@ -1327,12 +1327,16 @@ server.registerTool(
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
           // 4. Swap remaining tokens to output via Jupiter
-          // Use higher slippage for the swap (memecoins are volatile)
-          const swapSlippage = Math.max(params.slippage_bps, 500);
-          const jupSwapResult = await ZapSDK.buildJupiterSwapTransaction(
-            wallet.publicKey, tokenToSwap, outputMint,
-            new BN(swapAmount), 40, swapSlippage, undefined, JUP_CONFIG,
+          // Get fresh quote with dynamic slippage, then build tx immediately
+          const swapSlippage = Math.max(params.slippage_bps, 1000);
+          const jupQuote = await ZapSDK.getJupiterQuote(
+            tokenToSwap, outputMint, new BN(swapAmount),
+            40, swapSlippage, true, false, false, JUP_CONFIG,
           );
+          const jupSwapResult = jupQuote ? await ZapSDK.buildJupiterSwapTransaction(
+            wallet.publicKey, tokenToSwap, outputMint,
+            new BN(swapAmount), 40, swapSlippage, jupQuote, JUP_CONFIG,
+          ) : null;
           if (jupSwapResult && jupSwapResult.transaction) {
             const sig: string = await connection.sendTransaction(
               jupSwapResult.transaction as any, [wallet] as any[], sendOpts
