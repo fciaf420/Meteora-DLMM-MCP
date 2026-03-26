@@ -1207,14 +1207,31 @@ server.registerTool(
         position: positionKeypair.publicKey,
       });
 
-      // Send transactions (may be multiple)
+      // ZapInDlmmResponse: setupTransaction?, swapTransactions[], ledgerTransaction, zapInTransaction, cleanUpTransaction
+      // Each tx is a legacy Transaction. Only zapInTransaction needs the position keypair as signer.
+      const sendOpts = { skipPreflight: true };
       const signatures: string[] = [];
-      const txs = zapResult.transactions || [zapResult.transaction || zapResult];
-      for (const tx of Array.isArray(txs) ? txs : [txs]) {
-        if (!tx) continue;
-        const sig: string = await connection.sendTransaction(tx, [wallet, positionKeypair]);
-        await connection.confirmTransaction(sig);
-        signatures.push(sig);
+
+      async function sendAndConfirm(tx: unknown, signers: unknown[]): Promise<string> {
+        const sig: string = await connection.sendTransaction(tx as any, signers as any[], sendOpts);
+        await connection.confirmTransaction(sig, "confirmed");
+        return sig;
+      }
+
+      if (zapResult.setupTransaction) {
+        signatures.push(await sendAndConfirm(zapResult.setupTransaction, [wallet]));
+      }
+      for (const tx of zapResult.swapTransactions || []) {
+        signatures.push(await sendAndConfirm(tx, [wallet]));
+      }
+      if (zapResult.ledgerTransaction) {
+        signatures.push(await sendAndConfirm(zapResult.ledgerTransaction, [wallet]));
+      }
+      if (zapResult.zapInTransaction) {
+        signatures.push(await sendAndConfirm(zapResult.zapInTransaction, [wallet, positionKeypair]));
+      }
+      if (zapResult.cleanUpTransaction) {
+        signatures.push(await sendAndConfirm(zapResult.cleanUpTransaction, [wallet]));
       }
       return ok({
         success: true,
