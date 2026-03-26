@@ -6,7 +6,7 @@ const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
 const DLMM = require("@meteora-ag/dlmm");
-const { Connection, PublicKey, Keypair } = require("@solana/web3.js");
+const { Connection, PublicKey, Keypair, ComputeBudgetProgram } = require("@solana/web3.js");
 const BN = require("bn.js");
 const bs58 = require("bs58");
 const https = require("https");
@@ -1212,6 +1212,14 @@ server.registerTool(
       const sendOpts = { skipPreflight: true };
       const signatures: string[] = [];
 
+      // Prepend compute budget + priority fee to a legacy transaction
+      function addComputeBudget(tx: any, units: number, priorityMicroLamports: number): void {
+        tx.instructions.unshift(
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityMicroLamports }),
+          ComputeBudgetProgram.setComputeUnitLimit({ units }),
+        );
+      }
+
       async function sendAndConfirm(tx: unknown, signers: unknown[]): Promise<string> {
         const sig: string = await connection.sendTransaction(tx as any, signers as any[], sendOpts);
         await connection.confirmTransaction(sig, "confirmed");
@@ -1228,6 +1236,7 @@ server.registerTool(
         signatures.push(await sendAndConfirm(zapResult.ledgerTransaction, [wallet]));
       }
       if (zapResult.zapInTransaction) {
+        addComputeBudget(zapResult.zapInTransaction, 1_400_000, 1_000);
         signatures.push(await sendAndConfirm(zapResult.zapInTransaction, [wallet, positionKeypair]));
       }
       if (zapResult.cleanUpTransaction) {
