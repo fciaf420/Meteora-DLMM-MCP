@@ -1327,12 +1327,23 @@ server.registerTool(
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
           // 4. Swap remaining tokens to output via Jupiter
+          // Use higher slippage for the swap (memecoins are volatile)
+          const swapSlippage = Math.max(params.slippage_bps, 500);
           const jupSwapResult = await ZapSDK.buildJupiterSwapTransaction(
             wallet.publicKey, tokenToSwap, outputMint,
-            new BN(swapAmount), 40, params.slippage_bps, undefined, JUP_CONFIG,
+            new BN(swapAmount), 40, swapSlippage, undefined, JUP_CONFIG,
           );
           if (jupSwapResult && jupSwapResult.transaction) {
-            signatures.push(await sendAndConfirm(jupSwapResult.transaction, [wallet]));
+            const sig: string = await connection.sendTransaction(
+              jupSwapResult.transaction as any, [wallet] as any[], sendOpts
+            );
+            await connection.confirmTransaction(sig, "confirmed");
+            // Verify the swap succeeded on-chain
+            const txResult = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
+            if (txResult?.meta?.err) {
+              return fail(`Position closed but Jupiter swap failed on-chain: ${JSON.stringify(txResult.meta.err)}. Your ${tokenToSwap.toString()} tokens are in your wallet — swap them manually.`);
+            }
+            signatures.push(sig);
           }
         }
       }
