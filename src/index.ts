@@ -1327,7 +1327,7 @@ server.registerTool(
 
         if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
           // 4. Swap remaining tokens to output via Jupiter API directly
-          const swapSlippage = Math.max(params.slippage_bps, 1000);
+          const swapSlippage = Math.max(params.slippage_bps, 500);
           const jupApiBase = JUP_CONFIG.jupiterApiUrl;
           const jupHeaders: Record<string, string> = { "Content-Type": "application/json" };
           if (JUP_CONFIG.jupiterApiKey) jupHeaders["x-api-key"] = JUP_CONFIG.jupiterApiKey;
