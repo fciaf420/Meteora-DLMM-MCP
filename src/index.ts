@@ -245,10 +245,22 @@ server.registerTool(
   {
     title: "Search DLMM Pools",
     description:
-      "Search and list Meteora DLMM liquidity pools sorted by TVL, volume, fees, or fee/TVL ratio. " +
+      "Search and list Meteora DLMM liquidity pools with powerful sorting and filtering. " +
       "Returns pool objects with name, address, tokens (with symbol/decimals/price), bin config, " +
-      "TVL, 24h volume/fees, fee/TVL ratio, APR/APY, and current price. Server-side pagination. " +
-      "Read-only operation. Rate limit: 30 req/s.",
+      "TVL, multi-timeframe volume/fees/fee_tvl_ratio, APR/APY, and current price. " +
+      "Read-only operation.\n\n" +
+      "sort_by format: '<metric>_<window>:<direction>' for time-windowed, or '<field>:<direction>' for non-windowed.\n" +
+      "Windows: 5m, 30m, 1h, 2h, 4h, 12h, 24h\n" +
+      "Time-windowed metrics: volume, fee, fee_tvl_ratio, apr\n" +
+      "Non-windowed fields: tvl, fee_pct, bin_step, pool_created_at, farm_apy\n" +
+      "Examples: 'volume_1h:desc' (trending by hourly volume), 'pool_created_at:desc' (newest), " +
+      "'fee_tvl_ratio_24h:desc' (best fee/TVL), 'tvl:desc' (highest TVL)\n\n" +
+      "filter_by format: '<field><op><value>' joined by ' && '.\n" +
+      "Numeric fields: tvl, volume_*, fee_*, fee_tvl_ratio_*, apr_*\n" +
+      "Boolean: is_blacklisted\n" +
+      "Text: pool_address, name, token_x, token_y\n" +
+      "Operators: = > >= < <= for numeric; =true/=false for boolean; =[val1|val2] for multi-value OR\n" +
+      "Examples: 'tvl>1000 && is_blacklisted=false', 'volume_24h>=50000', 'token_x=SOL'",
     inputSchema: {
       limit: z
         .number()
@@ -264,25 +276,29 @@ server.registerTool(
         .default(1)
         .describe("Page number (1-based)"),
       sort_by: z
-        .enum(["tvl", "volume_24h", "fees_24h", "fee_tvl_ratio_24h"])
-        .default("tvl")
-        .describe("Sort field: tvl, volume_24h, fees_24h, or fee_tvl_ratio_24h"),
-      order: z
-        .enum(["asc", "desc"])
-        .default("desc")
-        .describe("Sort order: asc or desc"),
+        .string()
+        .default("volume_24h:desc")
+        .describe("Sort expression. Examples: 'volume_1h:desc', 'pool_created_at:desc', 'fee_tvl_ratio_24h:desc', 'tvl:desc'"),
+      query: z
+        .string()
+        .optional()
+        .describe("Search query to match pools by name, token symbol, or address"),
+      filter_by: z
+        .string()
+        .optional()
+        .describe("Filter expression. Examples: 'tvl>1000', 'is_blacklisted=false && volume_24h>=50000', 'token_x=SOL'"),
     },
     annotations: READ_ONLY_ANNOTATIONS,
   },
-  async ({ limit, page, sort_by, order }: { limit: number; page: number; sort_by: string; order: string }) => {
+  async ({ limit, page, sort_by, query, filter_by }: { limit: number; page: number; sort_by: string; query?: string; filter_by?: string }) => {
     try {
-      const sortKeyMap: Record<string, string> = {
-        tvl: "tvl",
-        volume_24h: "volume_24h",
-        fees_24h: "fees_24h",
-        fee_tvl_ratio_24h: "fee_tvl_ratio_24h",
-      };
-      const url = `${DATAPI}/pools?page=${page}&limit=${limit}&sort_key=${sortKeyMap[sort_by] || "tvl"}&order_by=${order}`;
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("page_size", String(limit));
+      params.set("sort_by", sort_by);
+      if (query) params.set("query", query);
+      if (filter_by) params.set("filter_by", filter_by);
+      const url = `${DATAPI}/pools?${params.toString()}`;
       const data = (await apiGet(url)) as { total: number; pages: number; current_page: number; page_size: number; data: Array<Record<string, unknown>> };
       const pools = (data.data || []).map((p: Record<string, unknown>) => {
         const tokenX = p.token_x as Record<string, unknown> || {};
@@ -298,13 +314,14 @@ server.registerTool(
           tokenY: { symbol: tokenY.symbol, mint: tokenY.address, decimals: tokenY.decimals },
           binStep: config.bin_step,
           tvl: p.tvl,
-          volume24h: volume["24h"],
-          fees24h: fees["24h"],
-          feeTvlRatio24h: feeTvl["24h"],
+          volume: { "1h": volume["1h"], "4h": volume["4h"], "24h": volume["24h"] },
+          fees: { "1h": fees["1h"], "4h": fees["4h"], "24h": fees["24h"] },
+          feeTvlRatio: { "1h": feeTvl["1h"], "4h": feeTvl["4h"], "24h": feeTvl["24h"] },
           currentPrice: p.current_price,
           apr: p.apr,
           apy: p.apy,
           dynamicFeePct: p.dynamic_fee_pct,
+          createdAt: p.created_at,
         };
       });
       return ok({
