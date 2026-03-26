@@ -1138,68 +1138,34 @@ server.registerTool(
       const strategyMap: Record<string, number> = { Spot: 0, Curve: 1, BidAsk: 2 };
       const strategy = strategyMap[params.strategy] || 0;
 
-      // Check if input token is one of the pool tokens (direct route)
-      const dlmm = await DLMM.create(connection, lbPair);
-      const isTokenX = dlmm.tokenX.publicKey.equals(inputTokenMint);
-      const isTokenY = dlmm.tokenY.publicKey.equals(inputTokenMint);
-      const isDirect = isTokenX || isTokenY;
-
+      // Always route through Jupiter (indirect) for best execution
       const zap = new ZapSDK.Zap(connection);
 
-      let zapParams: unknown;
-      if (isDirect) {
-        const estimate = await ZapSDK.estimateDlmmDirectSwap({
-          amountIn,
-          inputTokenMint,
-          lbPair,
-          connection,
-          swapSlippageBps: params.slippage_bps,
-          minDeltaId: params.min_delta_id,
-          maxDeltaId: params.max_delta_id,
-          strategy,
-        });
-        zapParams = await zap.getZapInDlmmDirectParams({
-          user: wallet.publicKey,
-          lbPair,
-          inputTokenMint,
-          amountIn,
-          maxActiveBinSlippage: 5,
-          minDeltaId: params.min_delta_id,
-          maxDeltaId: params.max_delta_id,
-          strategy,
-          favorXInActiveId: false,
-          maxAccounts: 30,
-          swapSlippageBps: params.slippage_bps,
-          maxTransferAmountExtendPercentage: 5,
-          directSwapEstimate: estimate.result,
-        });
-      } else {
-        const estimate = await ZapSDK.estimateDlmmIndirectSwap({
-          amountIn,
-          inputTokenMint,
-          lbPair,
-          connection,
-          swapSlippageBps: params.slippage_bps,
-          minDeltaId: params.min_delta_id,
-          maxDeltaId: params.max_delta_id,
-          strategy,
-        });
-        zapParams = await zap.getZapInDlmmIndirectParams({
-          user: wallet.publicKey,
-          lbPair,
-          inputTokenMint,
-          amountIn,
-          maxActiveBinSlippage: 5,
-          minDeltaId: params.min_delta_id,
-          maxDeltaId: params.max_delta_id,
-          strategy,
-          favorXInActiveId: false,
-          maxAccounts: 30,
-          swapSlippageBps: params.slippage_bps,
-          maxTransferAmountExtendPercentage: 5,
-          indirectSwapEstimate: estimate.result,
-        });
-      }
+      const estimate = await ZapSDK.estimateDlmmIndirectSwap({
+        amountIn,
+        inputTokenMint,
+        lbPair,
+        connection,
+        swapSlippageBps: params.slippage_bps,
+        minDeltaId: params.min_delta_id,
+        maxDeltaId: params.max_delta_id,
+        strategy,
+      });
+      const zapParams = await zap.getZapInDlmmIndirectParams({
+        user: wallet.publicKey,
+        lbPair,
+        inputTokenMint,
+        amountIn,
+        maxActiveBinSlippage: 5,
+        minDeltaId: params.min_delta_id,
+        maxDeltaId: params.max_delta_id,
+        strategy,
+        favorXInActiveId: false,
+        maxAccounts: 30,
+        swapSlippageBps: params.slippage_bps,
+        maxTransferAmountExtendPercentage: 5,
+        indirectSwapEstimate: estimate.result,
+      });
 
       const positionKeypair = Keypair.generate();
       const zapResult = await zap.buildZapInDlmmTransaction({
@@ -1257,6 +1223,120 @@ server.registerTool(
       return fail(
         `Zap failed: ${(e as Error).message}`
       );
+    }
+  }
+);
+
+// =========================================================================
+//  15b. ZAP OUT — remove position and convert to single token via Jupiter
+// =========================================================================
+server.registerTool(
+  "meteora_zap_out",
+  {
+    title: "Zap Out of Position",
+    description:
+      "Remove liquidity from a DLMM position and convert everything to a single output token via Jupiter. " +
+      "Removes 100% of liquidity, claims fees, closes the position, then swaps all tokens to the desired output. " +
+      "WRITE operation — requires WALLET_PRIVATE_KEY and @meteora-ag/zap-sdk.",
+    inputSchema: {
+      pool_address: z
+        .string()
+        .describe("Pool public key address (base58-encoded Solana address)"),
+      position_address: z
+        .string()
+        .describe("Position public key to zap out from (base58-encoded)"),
+      output_token_mint: z
+        .string()
+        .describe("Mint of the token you want to receive (e.g. SOL mint for all SOL)"),
+      slippage_bps: z
+        .number()
+        .int()
+        .min(0)
+        .max(10000)
+        .default(200)
+        .describe("Swap slippage tolerance in basis points (200 = 2%)"),
+    },
+    annotations: WRITE_ANNOTATIONS,
+  },
+  async (params: {
+    pool_address: string;
+    position_address: string;
+    output_token_mint: string;
+    slippage_bps: number;
+  }) => {
+    if (!wallet) return walletError();
+    if (!ZapSDK)
+      return fail("Zap SDK not installed. Install it with: npm install @meteora-ag/zap-sdk");
+    try {
+      const lbPair = new PublicKey(params.pool_address);
+      const positionPubkey = new PublicKey(params.position_address);
+      const outputMint = new PublicKey(params.output_token_mint);
+      const sendOpts = { skipPreflight: true };
+      const signatures: string[] = [];
+
+      async function sendAndConfirm(tx: unknown, signers: unknown[]): Promise<string> {
+        const sig: string = await connection.sendTransaction(tx as any, signers as any[], sendOpts);
+        await connection.confirmTransaction(sig, "confirmed");
+        return sig;
+      }
+
+      // 1. Remove all liquidity, claim fees, close position
+      const dlmm = await DLMM.create(connection, lbPair);
+      const position = await dlmm.getPosition(positionPubkey);
+      const fromBinId: number = position.positionData.lowerBinId;
+      const toBinId: number = position.positionData.upperBinId;
+      const removeTxs = await dlmm.removeLiquidity({
+        user: wallet.publicKey,
+        position: positionPubkey,
+        fromBinId,
+        toBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: true,
+      });
+      for (const tx of Array.isArray(removeTxs) ? removeTxs : [removeTxs]) {
+        signatures.push(await sendAndConfirm(tx, [wallet]));
+      }
+
+      // 2. Determine which token needs swapping to output via Jupiter
+      const tokenXMint = dlmm.tokenX.publicKey;
+      const tokenYMint = dlmm.tokenY.publicKey;
+      const tokenToSwap = outputMint.equals(tokenXMint) ? tokenYMint : tokenXMint;
+
+      // 3. Get token balance to swap
+      const { TOKEN_PROGRAM_ID } = require("@solana/spl-token");
+      const tokenAccounts = await connection.getTokenAccountsByOwner(wallet.publicKey, { mint: tokenToSwap });
+      if (tokenAccounts.value.length > 0) {
+        const accountInfo = await connection.getTokenAccountBalance(tokenAccounts.value[0].pubkey);
+        const swapAmount = accountInfo.value.amount;
+
+        if (swapAmount !== "0" && parseInt(swapAmount) > 0) {
+          // 4. Get Jupiter quote and swap
+          const jupQuote = await ZapSDK.getJupiterQuote(
+            tokenToSwap, outputMint, new BN(swapAmount),
+            30, params.slippage_bps, true, false, false,
+          );
+          if (jupQuote) {
+            const jupSwapResult = await ZapSDK.buildJupiterSwapTransaction(
+              wallet.publicKey, tokenToSwap, outputMint,
+              new BN(swapAmount), 30, params.slippage_bps, jupQuote,
+            );
+            if (jupSwapResult && jupSwapResult.transaction) {
+              signatures.push(await sendAndConfirm(jupSwapResult.transaction, [wallet]));
+            }
+          }
+        }
+      }
+
+      return ok({
+        success: true,
+        pool: params.pool_address,
+        positionClosed: params.position_address,
+        outputToken: params.output_token_mint,
+        signatures,
+        solscanLinks: signatures.map((s: string) => `https://solscan.io/tx/${s}`),
+      });
+    } catch (e: unknown) {
+      return fail(`Zap out failed: ${(e as Error).message}`);
     }
   }
 );
